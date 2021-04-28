@@ -1,7 +1,11 @@
 import logging
+import numpy as np
 import os
 import sys
+import wandb
 from datasets import load_metric, load_from_disk
+from datetime import datetime
+from pytz import timezone
 
 from transformers import AutoConfig, AutoModelForQuestionAnswering, AutoTokenizer
 
@@ -24,17 +28,32 @@ from arguments import (
 
 logger = logging.getLogger(__name__)
 
+os.environ['WANDB_PROJECT'] = 'p-stage3-open-domain-question-answering'
+os.environ['WANDB_LOG_MODEL'] = 'true'
+
 def main():
     # 가능한 arguments 들은 ./arguments.py 나 transformer package 안의 src/transformers/training_args.py 에서 확인 가능합니다.
     # --help flag 를 실행시켜서 확인할 수 도 있습니다.
-
+    now = datetime.now(timezone('Asia/Seoul')).strftime('%Y-%m-%d-%H:%M:%S')
     parser = HfArgumentParser(
         (ModelArguments, DataTrainingArguments, TrainingArguments)
     )
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
+    # Override output directory to current time
+    training_args.output_dir = now
+
     print(f"model is from {model_args.model_name_or_path}")
     print(f"data is from {data_args.dataset_name}")
+
+    wandb.init(
+        name=now,
+        config={'backbone':model_args.model_name_or_path,
+                'batch_size':training_args.per_device_train_batch_size,
+                'initial_lr':training_args.learning_rate,
+                'lr_schedule':training_args.lr_scheduler_type,
+                'weight_decay':training_args.weight_decay}
+    )
 
     # Setup logging
     logging.basicConfig(
@@ -81,7 +100,7 @@ def main():
 
 def run_sparse_embedding():
     retriever = SparseRetrieval(tokenize_fn=tokenize,
-                                data_path="./data",
+                                data_path="../input/data",
                                 context_path="wikipedia_documents.json")
     retriever.get_sparse_embedding()
 
@@ -197,6 +216,9 @@ def run_mrc(data_args, training_args, model_args, datasets, tokenizer, model):
             remove_columns=column_names,
             load_from_cache_file=not data_args.overwrite_cache,
         )
+
+        steps_per_epoch = np.ceil(len(train_dataset) / training_args.per_device_train_batch_size)
+        print(f">>>> {len(train_dataset)} data samples, batch size {training_args.per_device_train_batch_size} -> {steps_per_epoch} steps per epoch.")
 
     # Validation preprocessing
     def prepare_validation_features(examples):

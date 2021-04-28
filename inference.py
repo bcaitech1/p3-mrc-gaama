@@ -93,7 +93,7 @@ def run_sparse_retrieval(datasets, training_args):
     #### retreival process ####
 
     retriever = SparseRetrieval(tokenize_fn=tokenize,
-                                data_path="./data",
+                                data_path="../input/data",
                                 context_path="wikipedia_documents.json")
     retriever.get_sparse_embedding()
     df = retriever.retrieve(datasets['validation'])
