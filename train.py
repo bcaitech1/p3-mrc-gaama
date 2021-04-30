@@ -17,6 +17,12 @@ from transformers import (
     set_seed,
 )
 
+from transformers import (
+    get_cosine_with_hard_restarts_schedule_with_warmup,
+    EarlyStoppingCallback,
+)
+from torch.optim import AdamW
+
 from utils_qa import postprocess_qa_predictions, check_no_error, tokenize
 from trainer_qa import QuestionAnsweringTrainer
 from retrieval import SparseRetrieval
@@ -28,31 +34,34 @@ from arguments import (
 
 logger = logging.getLogger(__name__)
 
-os.environ['WANDB_PROJECT'] = 'p-stage3-open-domain-question-answering'
-os.environ['WANDB_LOG_MODEL'] = 'true'
+os.environ["WANDB_PROJECT"] = "p-stage3-open-domain-question-answering"
+os.environ["WANDB_LOG_MODEL"] = "true"
+
 
 def main():
     # 가능한 arguments 들은 ./arguments.py 나 transformer package 안의 src/transformers/training_args.py 에서 확인 가능합니다.
     # --help flag 를 실행시켜서 확인할 수 도 있습니다.
-    now = datetime.now(timezone('Asia/Seoul')).strftime('%Y-%m-%d-%H:%M:%S')
+    now = datetime.now(timezone("Asia/Seoul")).strftime("%Y-%m-%d-%H:%M:%S")
     parser = HfArgumentParser(
         (ModelArguments, DataTrainingArguments, TrainingArguments)
     )
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
     # Override output directory to current time
-    training_args.output_dir = now
+    training_args.output_dir = os.path.join("..", "ckpts", now)
 
     print(f"model is from {model_args.model_name_or_path}")
     print(f"data is from {data_args.dataset_name}")
 
     wandb.init(
         name=now,
-        config={'backbone':model_args.model_name_or_path,
-                'batch_size':training_args.per_device_train_batch_size,
-                'initial_lr':training_args.learning_rate,
-                'lr_schedule':training_args.lr_scheduler_type,
-                'weight_decay':training_args.weight_decay}
+        config={
+            "backbone": model_args.model_name_or_path,
+            "batch_size": training_args.per_device_train_batch_size,
+            "initial_lr": training_args.learning_rate,
+            "lr_schedule": training_args.lr_scheduler_type,
+            "weight_decay": training_args.weight_decay,
+        },
     )
 
     # Setup logging
@@ -99,9 +108,11 @@ def main():
 
 
 def run_sparse_embedding():
-    retriever = SparseRetrieval(tokenize_fn=tokenize,
-                                data_path="../input/data",
-                                context_path="wikipedia_documents.json")
+    retriever = SparseRetrieval(
+        tokenize_fn=tokenize,
+        data_path="../input/data",
+        context_path="wikipedia_documents.json",
+    )
     retriever.get_sparse_embedding()
 
 
@@ -121,7 +132,9 @@ def run_mrc(data_args, training_args, model_args, datasets, tokenizer, model):
     pad_on_right = tokenizer.padding_side == "right"
 
     # check if there is an error
-    last_checkpoint, max_seq_length = check_no_error(training_args, data_args, tokenizer, datasets)
+    last_checkpoint, max_seq_length = check_no_error(
+        training_args, data_args, tokenizer, datasets
+    )
 
     # Training preprocessing
     def prepare_train_features(examples):
@@ -136,7 +149,9 @@ def run_mrc(data_args, training_args, model_args, datasets, tokenizer, model):
             stride=data_args.doc_stride,
             return_overflowing_tokens=True,
             return_offsets_mapping=True,
-            padding="max_length" if data_args.pad_to_max_length else False,
+            padding="max_length"
+            if data_args.pad_to_max_length
+            else False,  # TODO: change to True?
         )
 
         # Since one example might give us several features if it has a long context, we need a map from a feature to
@@ -217,8 +232,12 @@ def run_mrc(data_args, training_args, model_args, datasets, tokenizer, model):
             load_from_cache_file=not data_args.overwrite_cache,
         )
 
-        steps_per_epoch = np.ceil(len(train_dataset) / training_args.per_device_train_batch_size)
-        print(f">>>> {len(train_dataset)} data samples, batch size {training_args.per_device_train_batch_size} -> {steps_per_epoch} steps per epoch.")
+        steps_per_epoch = int(
+            np.ceil(len(train_dataset) / training_args.per_device_train_batch_size)
+        )
+        print(
+            f">>>> {len(train_dataset)} data samples, batch size {training_args.per_device_train_batch_size} -> {steps_per_epoch} steps per epoch."
+        )
 
     # Validation preprocessing
     def prepare_validation_features(examples):
@@ -275,10 +294,8 @@ def run_mrc(data_args, training_args, model_args, datasets, tokenizer, model):
 
     # Data collator
     # We have already padded to max length if the corresponding flag is True, otherwise we need to pad in the data collator.
-    data_collator = (
-        DataCollatorWithPadding(
-            tokenizer, pad_to_multiple_of=8 if training_args.fp16 else None
-        )
+    data_collator = DataCollatorWithPadding(
+        tokenizer, pad_to_multiple_of=8 if training_args.fp16 else None
     )
 
     # Post-processing:
@@ -303,12 +320,30 @@ def run_mrc(data_args, training_args, model_args, datasets, tokenizer, model):
                 {"id": ex["id"], "answers": ex[answer_column_name]}
                 for ex in datasets["validation"]
             ]
-            return EvalPrediction(predictions=formatted_predictions, label_ids=references)
+            return EvalPrediction(
+                predictions=formatted_predictions, label_ids=references
+            )
 
     metric = load_metric("squad")
 
     def compute_metrics(p: EvalPrediction):
-        return metric.compute(predictions=p.predictions, references=p.label_ids)
+        m = metric.compute(predictions=p.predictions, references=p.label_ids)
+        return {f"eval_{k}": v for k, v in m.items()}
+
+    optimizer = AdamW(
+        model.parameters(),
+        lr=training_args.learning_rate,
+        weight_decay=training_args.weight_decay,
+    )
+    scheduler = get_cosine_with_hard_restarts_schedule_with_warmup(
+        optimizer=optimizer,
+        num_warmup_steps=0,
+        num_training_steps=steps_per_epoch * training_args.num_train_epochs,
+        num_cycles=1,
+    )
+    early_stopping = EarlyStoppingCallback(
+        early_stopping_patience=3, early_stopping_threshold=0.01
+    )
 
     # Initialize our Trainer
     trainer = QuestionAnsweringTrainer(
@@ -321,6 +356,8 @@ def run_mrc(data_args, training_args, model_args, datasets, tokenizer, model):
         data_collator=data_collator,
         post_process_function=post_processing_function,
         compute_metrics=compute_metrics,
+        optimizers=[optimizer, scheduler],
+        # callbacks=[early_stopping],
     )
 
     # Training
