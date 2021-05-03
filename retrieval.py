@@ -18,19 +18,25 @@ from konlpy.tag import Mecab
 import time
 from contextlib import contextmanager
 
+
 @contextmanager
 def timer(name):
     t0 = time.time()
     yield
-    print(f'[{name}] done in {time.time() - t0:.3f} s')
+    print(f"[{name}] done in {time.time() - t0:.3f} s")
+
 
 class SparseRetrieval:
-    def __init__(self, tokenize_fn, data_path="./data/", context_path="wikipedia_documents.json"):
+    def __init__(
+        self, tokenize_fn, data_path="./data/", context_path="wikipedia_documents.json"
+    ):
         self.data_path = data_path
         with open(os.path.join(data_path, context_path), "r") as f:
             wiki = json.load(f)
 
-        self.contexts = list(dict.fromkeys([v['text'] for v in wiki.values()])) # set 은 매번 순서가 바뀌므로
+        self.contexts = list(
+            dict.fromkeys([v["text"] for v in wiki.values()])
+        )  # set 은 매번 순서가 바뀌므로
         print(f"Lengths of unique contexts : {len(self.contexts)}")
         self.ids = list(range(len(self.contexts)))
 
@@ -89,12 +95,16 @@ class SparseRetrieval:
         quantizer.add(centroids)
 
         # 2. SQ8 + IVF indexer (IndexIVFScalarQuantizer)
-        self.indexer = faiss.IndexIVFScalarQuantizer(quantizer, quantizer.d, quantizer.ntotal, faiss.METRIC_L2)
+        self.indexer = faiss.IndexIVFScalarQuantizer(
+            quantizer, quantizer.d, quantizer.ntotal, faiss.METRIC_L2
+        )
         self.indexer.train(p_emb)
         self.indexer.add(p_emb)
 
     def retrieve(self, query_or_dataset, topk=1):
-        assert self.p_embedding is not None, "You must build faiss by self.get_sparse_embedding() before you run self.retrieve()."
+        assert (
+            self.p_embedding is not None
+        ), "You must build faiss by self.get_sparse_embedding() before you run self.retrieve()."
         if isinstance(query_or_dataset, str):
             doc_scores, doc_indices = self.get_relevant_doc(query_or_dataset, k=topk)
             print("[Search query]\n", query_or_dataset, "\n")
@@ -108,18 +118,22 @@ class SparseRetrieval:
             # make retrieved result as dataframe
             total = []
             with timer("query exhaustive search"):
-                doc_scores, doc_indices = self.get_relevant_doc_bulk(query_or_dataset['question'], k=1)
-            for idx, example in enumerate(tqdm(query_or_dataset, desc="Sparse retrieval: ")):
+                doc_scores, doc_indices = self.get_relevant_doc_bulk(
+                    query_or_dataset["question"], k=1
+                )
+            for idx, example in enumerate(
+                tqdm(query_or_dataset, desc="Sparse retrieval: ")
+            ):
                 # relev_doc_ids = [el for i, el in enumerate(self.ids) if i in doc_indices[idx]]
                 tmp = {
                     "question": example["question"],
-                    "id": example['id'],
+                    "id": example["id"],
                     "context_id": doc_indices[idx][0],  # retrieved id
-                    "context": self.contexts[doc_indices[idx][0]]  # retrieved doument
+                    "context": self.contexts[doc_indices[idx][0]],  # retrieved doument
                 }
-                if 'context' in example.keys() and 'answers' in example.keys():
-                    tmp["original_context"] = example['context']  # original document
-                    tmp["answers"] = example['answers']           # original answer
+                if "context" in example.keys() and "answers" in example.keys():
+                    tmp["original_context"] = example["context"]  # original document
+                    tmp["answers"] = example["answers"]  # original answer
                 total.append(tmp)
 
             cqas = pd.DataFrame(total)
@@ -132,7 +146,7 @@ class SparseRetrieval:
         with timer("transform"):
             query_vec = self.tfidfv.transform([query])
         assert (
-                np.sum(query_vec) != 0
+            np.sum(query_vec) != 0
         ), "오류가 발생했습니다. 이 오류는 보통 query에 vectorizer의 vocab에 없는 단어만 존재하는 경우 발생합니다."
 
         with timer("query ex search"):
@@ -145,7 +159,7 @@ class SparseRetrieval:
     def get_relevant_doc_bulk(self, queries, k=1):
         query_vec = self.tfidfv.transform(queries)
         assert (
-                np.sum(query_vec) != 0
+            np.sum(query_vec) != 0
         ), "오류가 발생했습니다. 이 오류는 보통 query에 vectorizer의 vocab에 없는 단어만 존재하는 경우 발생합니다."
 
         result = query_vec * self.p_embedding.T
@@ -160,10 +174,14 @@ class SparseRetrieval:
         return doc_scores, doc_indices
 
     def retrieve_faiss(self, query_or_dataset, topk=1):
-        assert self.indexer is not None, "You must build faiss by self.build_faiss() before you run self.retrieve_faiss()."
+        assert (
+            self.indexer is not None
+        ), "You must build faiss by self.build_faiss() before you run self.retrieve_faiss()."
 
         if isinstance(query_or_dataset, str):
-            doc_scores, doc_indices = self.get_relevant_doc_faiss(query_or_dataset, k=topk)
+            doc_scores, doc_indices = self.get_relevant_doc_faiss(
+                query_or_dataset, k=topk
+            )
             print("[Search query]\n", query_or_dataset, "\n")
 
             for i in range(topk):
@@ -172,23 +190,27 @@ class SparseRetrieval:
             return doc_scores, [self.contexts[doc_indices[i]] for i in range(topk)]
 
         elif isinstance(query_or_dataset, Dataset):
-            queries = query_or_dataset['question']
+            queries = query_or_dataset["question"]
             # make retrieved result as dataframe
             total = []
             with timer("query faiss search"):
-                doc_scores, doc_indices = self.get_relevant_doc_bulk_faiss(queries, k=topk)
-            for idx, example in enumerate(tqdm(query_or_dataset, desc="Sparse retrieval: ")):
+                doc_scores, doc_indices = self.get_relevant_doc_bulk_faiss(
+                    queries, k=topk
+                )
+            for idx, example in enumerate(
+                tqdm(query_or_dataset, desc="Sparse retrieval: ")
+            ):
                 # relev_doc_ids = [el for i, el in enumerate(self.ids) if i in doc_indices[idx]]
 
                 tmp = {
                     "question": example["question"],
-                    "id": example['id'],  # original id
+                    "id": example["id"],  # original id
                     "context_id": doc_indices[idx][0],  # retrieved id
-                    "context": self.contexts[doc_indices[idx][0]]  # retrieved doument
+                    "context": self.contexts[doc_indices[idx][0]],  # retrieved doument
                 }
-                if 'context' in example.keys() and 'answers' in example.keys():
-                    tmp["original_context"]: example['context']  # original document
-                    tmp["answers"]: example['answers']           # original answer
+                if "context" in example.keys() and "answers" in example.keys():
+                    tmp["original_context"]: example["context"]  # original document
+                    tmp["answers"]: example["answers"]  # original answer
                 total.append(tmp)
 
             cqas = pd.DataFrame(total)
@@ -200,7 +222,7 @@ class SparseRetrieval:
         """
         query_vec = self.tfidfv.transform([query])
         assert (
-                np.sum(query_vec) != 0
+            np.sum(query_vec) != 0
         ), "오류가 발생했습니다. 이 오류는 보통 query에 vectorizer의 vocab에 없는 단어만 존재하는 경우 발생합니다."
 
         q_emb = query_vec.toarray().astype(np.float32)
@@ -208,12 +230,11 @@ class SparseRetrieval:
             D, I = self.indexer.search(q_emb, k)
         return D.tolist()[0], I.tolist()[0]
 
-
     def get_relevant_doc_bulk_faiss(self, queries, k=1):
         query_vecs = self.tfidfv.transform(queries)
 
         assert (
-                np.sum(query_vecs) != 0
+            np.sum(query_vecs) != 0
         ), "오류가 발생했습니다. 이 오류는 보통 query에 vectorizer의 vocab에 없는 단어만 존재하는 경우 발생합니다."
         q_embs = query_vecs.toarray().astype(np.float32)
         D, I = self.indexer.search(q_embs, k)
@@ -228,12 +249,13 @@ if __name__ == "__main__":
             org_dataset["train"].flatten_indices(),
             org_dataset["validation"].flatten_indices(),
         ]
-    ) # train dev 를 합친 4192 개 질문에 대해 모두 테스트
-    print("*"*40, "query dataset", "*"*40)
+    )  # train dev 를 합친 4192 개 질문에 대해 모두 테스트
+    print("*" * 40, "query dataset", "*" * 40)
     print(full_ds)
 
     ### Mecab 이 가장 높은 성능을 보였기에 mecab 으로 선택 했습니다 ###
     mecab = Mecab()
+
     def tokenize(text):
         # return text.split(" ")
         return mecab.morphs(text)
@@ -251,7 +273,8 @@ if __name__ == "__main__":
         # tokenize_fn=tokenizer.tokenize,
         tokenize_fn=tokenize,
         data_path="data",
-        context_path=wiki_path)
+        context_path=wiki_path,
+    )
 
     # test single query
     query = "대통령을 포함한 미국의 행정부 견제권을 갖는 국가 기관은?"
@@ -264,11 +287,12 @@ if __name__ == "__main__":
     # test bulk
     with timer("bulk query by exhaustive search"):
         df = retriever.retrieve(full_ds)
-        df['correct'] = df['original_context'] == df['context']
-        print("correct retrieval result by exhaustive search", df['correct'].sum() / len(df))
+        df["correct"] = df["original_context"] == df["context"]
+        print(
+            "correct retrieval result by exhaustive search",
+            df["correct"].sum() / len(df),
+        )
     with timer("bulk query by exhaustive search"):
         df = retriever.retrieve_faiss(full_ds)
-        df['correct'] = df['original_context'] == df['context']
-        print("correct retrieval result by faiss", df['correct'].sum() / len(df))
-
-
+        df["correct"] = df["original_context"] == df["context"]
+        print("correct retrieval result by faiss", df["correct"].sum() / len(df))
