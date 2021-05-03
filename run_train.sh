@@ -6,10 +6,14 @@ python train.py \
 --logging_strategy epoch \
 --do_eval \
 --evaluation_strategy epoch \
+--save_strategy epoch \
 --logging_first_step \
 --per_device_train_batch_size 32 \
 --per_device_eval_batch_size 32 \
---num_train_epochs 6 \
+--num_train_epochs 5 \
 --weight_decay 0.01 \
 --lr_scheduler_type cosine \
---learning_rate 3e-5
+--learning_rate 3e-5 \
+--warmup_ratio 0.0 \
+--load_best_model_at_end \
+--metric_for_best_model f1 \
