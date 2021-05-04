@@ -26,21 +26,20 @@ def evaluation(gt_path, pred_path):
     for qa in gt:
         total += 1
         if qa["id"] not in preds:
-            message = (
-                "Unanswered question " + qa["id"] + " will receive score 0."
-            )
+            message = "Unanswered question " + qa["id"] + " will receive score 0."
             print(message, file=sys.stderr)
             continue
-        ground_truths = qa['answers']['text'][0]
+        ground_truths = qa["answers"]["text"]
         prediction = preds[qa["id"]]
         exact_match += metric_max_over_ground_truths(
             exact_match_score, prediction, ground_truths
         )
+
         f1 += metric_max_over_ground_truths(f1_score, prediction, ground_truths)
 
     exact_match = exact_match / total
     f1 = f1 / total
-    
+
     results = {}
     results["EM"] = {
         "value": f"{exact_match:.2%}",
@@ -58,7 +57,7 @@ def evaluation(gt_path, pred_path):
 
 def normalize_answer(s):
     def remove_(text):
-        """ 불필요한 기호 제거 """
+        """불필요한 기호 제거"""
         text = re.sub("'", " ", text)
         text = re.sub('"', " ", text)
         text = re.sub("《", " ", text)
@@ -123,4 +122,3 @@ def metric_max_over_ground_truths(metric_fn, prediction, ground_truths):
         score = metric_fn(prediction, ground_truth)
         scores_for_ground_truths.append(score)
     return max(scores_for_ground_truths)
-

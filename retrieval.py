@@ -26,6 +26,11 @@ def timer(name):
     print(f"[{name}] done in {time.time() - t0:.3f} s")
 
 
+class DenseRetrieval:
+    def __init__(self):
+        pass
+
+
 class SparseRetrieval:
     def __init__(
         self, tokenize_fn, data_path="./data/", context_path="wikipedia_documents.json"
@@ -209,8 +214,8 @@ class SparseRetrieval:
                     "context": self.contexts[doc_indices[idx][0]],  # retrieved doument
                 }
                 if "context" in example.keys() and "answers" in example.keys():
-                    tmp["original_context"]: example["context"]  # original document
-                    tmp["answers"]: example["answers"]  # original answer
+                    tmp["original_context"] = example["context"]  # original document
+                    tmp["answers"] = example["answers"]  # original answer
                 total.append(tmp)
 
             cqas = pd.DataFrame(total)
@@ -243,7 +248,7 @@ class SparseRetrieval:
 
 if __name__ == "__main__":
     # Test sparse
-    org_dataset = load_from_disk("data/train_dataset")
+    org_dataset = load_from_disk("/opt/ml/input/data/train_dataset")
     full_ds = concatenate_datasets(
         [
             org_dataset["train"].flatten_indices(),
@@ -272,9 +277,12 @@ if __name__ == "__main__":
     retriever = SparseRetrieval(
         # tokenize_fn=tokenizer.tokenize,
         tokenize_fn=tokenize,
-        data_path="data",
+        data_path="/opt/ml/input/data",
         context_path=wiki_path,
     )
+
+    # retriever.get_sparse_embedding()
+    # retriever.build_faiss()
 
     # test single query
     query = "대통령을 포함한 미국의 행정부 견제권을 갖는 국가 기관은?"
