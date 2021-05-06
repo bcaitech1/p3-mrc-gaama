@@ -7,8 +7,17 @@ Open-Domain Question Answering 을 수행하는 inference 코드 입니다.
 
 import logging
 import os
+import pickle
 import sys
-from datasets import load_metric, load_from_disk, Sequence, Value, Features, Dataset, DatasetDict
+from datasets import (
+    load_metric,
+    load_from_disk,
+    Sequence,
+    Value,
+    Features,
+    Dataset,
+    DatasetDict,
+)
 
 from transformers import AutoConfig, AutoModelForQuestionAnswering, AutoTokenizer
 
@@ -22,7 +31,7 @@ from transformers import (
 
 from utils_qa import postprocess_qa_predictions, check_no_error, tokenize
 from trainer_qa import QuestionAnsweringTrainer
-from retrieval import SparseRetrieval
+from retrieval import SparseRetrieval, DenseRetrieval, SparseBM25Retrieval
 
 from arguments import (
     ModelArguments,
@@ -82,39 +91,85 @@ def main():
 
     # run passage retrieval if true
     if data_args.eval_retrieval:
-        datasets = run_sparse_retrieval(datasets, training_args)
+        datasets = run_retrieval(datasets, training_args, data_args.retrieval_strategy)
 
     # eval or predict mrc model
     if training_args.do_eval or training_args.do_predict:
         run_mrc(data_args, training_args, model_args, datasets, tokenizer, model)
 
 
-def run_sparse_retrieval(datasets, training_args):
+def run_retrieval(datasets, training_args, strategy="sparse"):
     #### retreival process ####
 
-    retriever = SparseRetrieval(tokenize_fn=tokenize,
-                                data_path="../input/data",
-                                context_path="wikipedia_documents.json")
-    retriever.get_sparse_embedding()
-    df = retriever.retrieve(datasets['validation'])
+    if strategy == "sparse":
+        pickle_name = f"sparse_bm25_data.bin"
+        emd_path = os.path.join("/opt/ml/input/data/test_dataset", pickle_name)
+        if os.path.isfile(emd_path):
+            with open(emd_path, "rb") as file:
+                df = pickle.load(file)
+                print("Retrieved documents pickle load.")
+        else:
+            retriever = SparseBM25Retrieval(
+                tokenize_fn=tokenize,
+                data_path="../input/data",
+                context_path="wikipedia_documents.json",
+            )
+            retriever.get_sparse_embedding()
+            df = retriever.retrieve(datasets["validation"])
+
+            with open(emd_path, "wb") as file:
+                pickle.dump(df, file)
+                print("Retrieved documents pickle saved.")
+
+    elif strategy == "dense":
+        pickle_name = f"dense_data.bin"
+        emd_path = os.path.join("/opt/ml/input/data/test_dataset", pickle_name)
+        if os.path.isfile(emd_path):
+            with open(emd_path, "rb") as file:
+                df = pickle.load(file)
+                print("Retrieved documents pickle load.")
+        else:
+            retriever = DenseRetrieval(
+                data_path="../input/data", context_path="wikipedia_documents.json"
+            )
+            retriever.get_dense_embedding()
+            df = retriever.retrieve(datasets["validation"])
+
+            with open(emd_path, "wb") as file:
+                pickle.dump(df, file)
+                print("Retrieved documents pickle saved.")
 
     # faiss retrieval
     # df = retriever.retrieve_faiss(dataset['validation'])
 
-    if training_args.do_predict: # test data 에 대해선 정답이 없으므로 id question context 로만 데이터셋이 구성됩니다.
-        f = Features({'context': Value(dtype='string', id=None),
-                      'id': Value(dtype='string', id=None),
-                      'question': Value(dtype='string', id=None)})
+    # test data 에 대해선 정답이 없으므로 id question context 로만 데이터셋이 구성됩니다.
+    if training_args.do_predict:
+        f = Features(
+            {
+                "context": Value(dtype="string", id=None),
+                "id": Value(dtype="string", id=None),
+                "question": Value(dtype="string", id=None),
+            }
+        )
+    # train data 에 대해선 정답이 존재하므로 id question context answer 로 데이터셋이 구성됩니다.
+    elif training_args.do_eval:
+        f = Features(
+            {
+                "answers": Sequence(
+                    feature={
+                        "text": Value(dtype="string", id=None),
+                        "answer_start": Value(dtype="int32", id=None),
+                    },
+                    length=-1,
+                    id=None,
+                ),
+                "context": Value(dtype="string", id=None),
+                "id": Value(dtype="string", id=None),
+                "question": Value(dtype="string", id=None),
+            }
+        )
 
-    elif training_args.do_eval: # train data 에 대해선 정답이 존재하므로 id question context answer 로 데이터셋이 구성됩니다.
-        f = Features({'answers': Sequence(feature={'text': Value(dtype='string', id=None),
-                                                   'answer_start': Value(dtype='int32', id=None)},
-                                          length=-1, id=None),
-                      'context': Value(dtype='string', id=None),
-                      'id': Value(dtype='string', id=None),
-                      'question': Value(dtype='string', id=None)})
-
-    datasets = DatasetDict({'validation': Dataset.from_pandas(df, features=f)})
+    datasets = DatasetDict({"validation": Dataset.from_pandas(df, features=f)})
     return datasets
 
 
@@ -130,7 +185,9 @@ def run_mrc(data_args, training_args, model_args, datasets, tokenizer, model):
     pad_on_right = tokenizer.padding_side == "right"
 
     # check if there is an error
-    last_checkpoint, max_seq_length = check_no_error(training_args, data_args, tokenizer, datasets)
+    last_checkpoint, max_seq_length = check_no_error(
+        training_args, data_args, tokenizer, datasets
+    )
 
     # Validation preprocessing
     def prepare_validation_features(examples):
@@ -186,10 +243,8 @@ def run_mrc(data_args, training_args, model_args, datasets, tokenizer, model):
 
     # Data collator
     # We have already padded to max length if the corresponding flag is True, otherwise we need to pad in the data collator.
-    data_collator = (
-        DataCollatorWithPadding(
-            tokenizer, pad_to_multiple_of=8 if training_args.fp16 else None
-        )
+    data_collator = DataCollatorWithPadding(
+        tokenizer, pad_to_multiple_of=8 if training_args.fp16 else None
     )
 
     # Post-processing:
@@ -214,7 +269,9 @@ def run_mrc(data_args, training_args, model_args, datasets, tokenizer, model):
                 {"id": ex["id"], "answers": ex[answer_column_name]}
                 for ex in datasets["validation"]
             ]
-            return EvalPrediction(predictions=formatted_predictions, label_ids=references)
+            return EvalPrediction(
+                predictions=formatted_predictions, label_ids=references
+            )
 
     metric = load_metric("squad")
 
@@ -226,9 +283,9 @@ def run_mrc(data_args, training_args, model_args, datasets, tokenizer, model):
     trainer = QuestionAnsweringTrainer(
         model=model,
         args=training_args,
-        train_dataset= None,
+        train_dataset=None,
         eval_dataset=eval_dataset,
-        eval_examples=datasets['validation'],
+        eval_examples=datasets["validation"],
         tokenizer=tokenizer,
         data_collator=data_collator,
         post_process_function=post_processing_function,
@@ -239,11 +296,14 @@ def run_mrc(data_args, training_args, model_args, datasets, tokenizer, model):
 
     #### eval dataset & eval example - will create predictions.json
     if training_args.do_predict:
-        predictions = trainer.predict(test_dataset=eval_dataset,
-                                        test_examples=datasets['validation'])
+        predictions = trainer.predict(
+            test_dataset=eval_dataset, test_examples=datasets["validation"]
+        )
 
         # predictions.json is already saved when we call postprocess_qa_predictions(). so there is no need to further use predictions.
-        print("No metric can be presented because there is no correct answer given. Job done!")
+        print(
+            "No metric can be presented because there is no correct answer given. Job done!"
+        )
 
     if training_args.do_eval:
         metrics = trainer.evaluate()
@@ -251,6 +311,7 @@ def run_mrc(data_args, training_args, model_args, datasets, tokenizer, model):
 
         trainer.log_metrics("test", metrics)
         trainer.save_metrics("test", metrics)
+
 
 if __name__ == "__main__":
     main()

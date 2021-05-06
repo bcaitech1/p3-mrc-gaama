@@ -6,4 +6,6 @@ python inference.py \
 --per_device_train_batch_size 32 \
 --per_device_eval_batch_size 32 \
 --model_name_or_path /opt/ml/ckpts \
---do_predict
+--do_predict \
+--retrieval_strategy sparse \
+--max_seq_length 440
