@@ -9,7 +9,7 @@ class ModelArguments:
     """
 
     model_name_or_path: str = field(
-        default="monologg/koelectra-base-v3-discriminator",
+        default="monologg/koelectra-base-v3-finetuned-korquad",
         metadata={
             "help": "Path to pretrained model or model identifier from huggingface.co/models"
         },
@@ -87,6 +87,13 @@ class DataTrainingArguments:
     eval_retrieval: bool = field(
         default=True,
         metadata={
-            "help": "Whether to run passage retrieval using sparse/dense embedding )."
+            "help": "Whether to run passage retrieval using sparse/dense embedding)."
+        },
+    )
+
+    retrieval_strategy: str = field(
+        default="sparse",
+        metadata={
+            "help": "Whether to run passage retrieval using sparse or dense embedding)."
         },
     )
