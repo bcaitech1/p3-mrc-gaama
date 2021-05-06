@@ -10,8 +10,6 @@ from datasets import load_from_disk, concatenate_datasets
 from torch.utils.data import DataLoader, RandomSampler, TensorDataset
 from transformers import (
     AutoTokenizer,
-    BertModel,
-    BertPreTrainedModel,
     AdamW,
     TrainingArguments,
     get_linear_schedule_with_warmup,
@@ -22,25 +20,10 @@ from datetime import datetime
 from pytz import timezone
 
 from utils_qa import set_seed
+from models import BertEncoder
 
 os.environ["WANDB_PROJECT"] = "p-stage3-odqa-retriever"
 os.environ["WANDB_LOG_MODEL"] = "true"
-
-
-class BertEncoder(BertPreTrainedModel):
-    def __init__(self, config):
-        super(BertEncoder, self).__init__(config)
-
-        self.bert = BertModel(config)
-        self.init_weights()
-
-    def forward(self, input_ids, attention_mask=None, token_type_ids=None):
-        outputs = self.bert(
-            input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids
-        )
-
-        pooled_output = outputs[1]
-        return pooled_output
 
 
 def main():
@@ -117,7 +100,9 @@ def main():
     #         "/opt/ml/p3-mrc-gaama/dense_encoder/q_encoder"
     #     ).cuda()
 
-    def train(args, dataset, p_model, q_model):
+    save_to = "./dense_encoder"
+
+    def train(args, dataset, p_model, q_model, load_from=None):
         # Dataloader
         train_sampler = RandomSampler(dataset)
         train_dataloader = DataLoader(
@@ -140,12 +125,31 @@ def main():
 
         # Start training!
         global_step = 0
+        start_epoch = 0
+
+        if load_from is not None:
+            checkpoint = torch.load(os.path.join(save_to, f"epoch-{load_from}.pt"))
+            p_model.load_state_dict(checkpoint["p_model"])
+            q_model.load_state_dict(checkpoint["q_model"])
+            optimizer.load_state_dict(checkpoint["optimizer"])
+            start_epoch = checkpoint["epoch"]
+
+            steps = (
+                len(train_dataloader) // args.gradient_accumulation_steps * start_epoch
+            )
+            print(
+                f">>>> Continue training from epoch {load_from}, skipping first {steps} steps."
+            )
+
+            for _ in range(steps):
+                scheduler.step()
+                global_step += 1
 
         p_model.zero_grad()
         q_model.zero_grad()
         torch.cuda.empty_cache()
 
-        train_iterator = trange(int(args.num_train_epochs), desc="Epoch")
+        train_iterator = trange(int(args.num_train_epochs) - start_epoch, desc="Epoch")
 
         for epoch in train_iterator:
             epoch_iterator = tqdm(train_dataloader, desc="Iteration")
@@ -186,13 +190,14 @@ def main():
 
                 loss = F.nll_loss(sim_scores, targets)
                 if step % 100 == 0:
-                    print(f"Epoch {epoch}, step {step}: loss={loss}")
-                wandb.log(
-                    {
-                        "learning_rate": scheduler.get_last_lr()[0],
-                        "loss": loss,
-                    }
-                )
+                    print(f"Epoch {epoch+start_epoch}, step {step}: loss={loss}")
+                    wandb.log(
+                        {
+                            "learning_rate": scheduler.get_last_lr()[0],
+                            "loss": loss,
+                        },
+                        step=global_step,
+                    )
 
                 loss.backward()
                 optimizer.step()
@@ -203,13 +208,17 @@ def main():
 
                 torch.cuda.empty_cache()
 
-            if (epoch + 1) % 8 == 0:
-                save_to = "./dense_encoder"
-                p_encoder.save_pretrained(
-                    os.path.join(save_to, f"epoch-{epoch+1}", "p_encoder")
-                )
-                q_encoder.save_pretrained(
-                    os.path.join(save_to, f"epoch-{epoch+1}", "q_encoder")
+            if (epoch + start_epoch + 1) % 8 == 0:
+                if not os.path.exists(save_to):
+                    os.makedirs(save_to)
+                torch.save(
+                    {
+                        "epoch": epoch + start_epoch + 1,
+                        "p_model": p_model.state_dict(),
+                        "q_model": q_model.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                    },
+                    os.path.join(save_to, f"epoch-{epoch + start_epoch}.pt"),
                 )
 
         return p_model, q_model
