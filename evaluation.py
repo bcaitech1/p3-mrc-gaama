@@ -31,11 +31,12 @@ def evaluation(gt_path, pred_path):
             )
             print(message, file=sys.stderr)
             continue
-        ground_truths = qa['answers']['text'][0]
+        ground_truths = qa['answers']['text']
         prediction = preds[qa["id"]]
         exact_match += metric_max_over_ground_truths(
             exact_match_score, prediction, ground_truths
         )
+
         f1 += metric_max_over_ground_truths(f1_score, prediction, ground_truths)
 
     exact_match = exact_match / total
@@ -123,4 +124,3 @@ def metric_max_over_ground_truths(metric_fn, prediction, ground_truths):
         score = metric_fn(prediction, ground_truth)
         scores_for_ground_truths.append(score)
     return max(scores_for_ground_truths)
-

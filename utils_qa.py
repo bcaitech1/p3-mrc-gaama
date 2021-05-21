@@ -32,11 +32,16 @@ from transformers import is_torch_available, PreTrainedTokenizerFast
 from transformers.trainer_utils import get_last_checkpoint
 
 logger = logging.getLogger(__name__)
-
+ban_words=("이따금","아마","절대로","무조건","한때","대략","오직",
+          "오로지","감히","최소","아예","반드시","꼭","때때로","이미", "심지어"
+          ,"종종","졸곧","약간","기꺼이", "비록","꾸준히","일부러","어쩔", "문득", "어쨌든", "순전히", "필수","자칫", "다소", "간혹", "적어도", "왜냐하면", "아무래도")
 mecab = Mecab()
 def tokenize(text):
     # return text.split(" ")
     return mecab.morphs(text)
+
+def sigmoid(x):
+    return 1/(1+np.exp(-x))
 
 def set_seed(seed: int):
     """
@@ -67,6 +72,7 @@ def postprocess_qa_predictions(
     output_dir: Optional[str] = None,
     prefix: Optional[str] = None,
     is_world_process_zero: bool = True,
+    consider=20
 ):
     """
     Post-processes the predictions of a question-answering model to convert them to answers that are substrings of the
@@ -162,12 +168,12 @@ def postprocess_qa_predictions(
                     "start_logit": start_logits[0],
                     "end_logit": end_logits[0],
                 }
-
+            
             # Go through all possibilities for the `n_best_size` greater start and end logits.
             start_indexes = np.argsort(start_logits)[
-                -1 : -n_best_size - 1 : -1
+                -1 : -consider - 1 : -1
             ].tolist()
-            end_indexes = np.argsort(end_logits)[-1 : -n_best_size - 1 : -1].tolist()
+            end_indexes = np.argsort(end_logits)[-1 : -consider - 1 : -1].tolist()
             for start_index in start_indexes:
                 for end_index in end_indexes:
                     # Don't consider out-of-scope answers, either because the indices are out of bounds or correspond
@@ -192,13 +198,34 @@ def postprocess_qa_predictions(
                         and not token_is_max_context.get(str(start_index), False)
                     ):
                         continue
+                    
+                    
+                    
+                    flag=False
+                    candidate_word=example["context"][offset_mapping[start_index][0]:offset_mapping[end_index][1]]
+                    for ban_word in ban_words:
+                        if ban_word in candidate_word:
+                            flag=True
+                            break
+                    if flag:
+                        print("BAN",candidate_word)
+                        continue                  
+                    else:
+                        print("ACCEPT",candidate_word)
+
+                    
+                    
+                    
+                    
                     prelim_predictions.append(
                         {
                             "offsets": (
                                 offset_mapping[start_index][0],
                                 offset_mapping[end_index][1],
                             ),
-                            "score": start_logits[start_index] + end_logits[end_index],
+                            #"score": start_logits[start_index]+end_logits[end_index],
+                            "score": sigmoid(start_logits[start_index])*sigmoid(end_logits[end_index]),
+                            #"score": max(start_logits[start_index]+5,0)*max(end_logits[end_index]+5,0),
                             "start_logit": start_logits[start_index],
                             "end_logit": end_logits[end_index],
                         }
@@ -207,12 +234,10 @@ def postprocess_qa_predictions(
             # Add the minimum null prediction
             prelim_predictions.append(min_null_prediction)
             null_score = min_null_prediction["score"]
-
         # Only keep the best `n_best_size` predictions.
         predictions = sorted(
             prelim_predictions, key=lambda x: x["score"], reverse=True
         )[:n_best_size]
-
         # Add back the minimum null prediction if it was removed because of its low score.
         if version_2_with_negative and not any(
             p["offsets"] == (0, 0) for p in predictions
@@ -224,6 +249,7 @@ def postprocess_qa_predictions(
         for pred in predictions:
             offsets = pred.pop("offsets")
             pred["text"] = context[offsets[0] : offsets[1]]
+            #print(pred["text"],pred["score"],pred["start_logit"],pred["end_logit"])
 
         # In the very rare edge case we have not a single non-null prediction, we create a fake prediction to avoid
         # failure.
@@ -253,6 +279,7 @@ def postprocess_qa_predictions(
             while predictions[i]["text"] == "":
                 i += 1
             best_non_null_pred = predictions[i]
+            
 
             # Then we compare to the null prediction using the threshold.
             score_diff = (
@@ -266,7 +293,8 @@ def postprocess_qa_predictions(
             if score_diff > null_score_diff_threshold:
                 all_predictions[example["id"]] = ""
             else:
-                all_predictions[example["id"]] = best_non_null_pred["text"]
+                #all_predictions[example["id"]] = best_non_null_pred["text"]
+                all_predictions[example["id"]] = best_non_null_pred
 
         # Make `predictions` JSON-serializable by casting np.float back to float.
         all_nbest_json[example["id"]] = [

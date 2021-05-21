@@ -97,7 +97,7 @@ class QuestionAnsweringTrainer(Trainer):
             )
         finally:
             self.compute_metrics = compute_metrics
-
+        print("output qa",output)
         if self.post_process_function is None or self.compute_metrics is None:
             return output
 
@@ -107,7 +107,8 @@ class QuestionAnsweringTrainer(Trainer):
                 type=test_dataset.format["type"],
                 columns=list(test_dataset.features.keys()),
             )
-
+        print("t qa",test_examples)
+        print("out predic",output.predictions)
         predictions = self.post_process_function(
             test_examples, test_dataset, output.predictions, self.args
         )

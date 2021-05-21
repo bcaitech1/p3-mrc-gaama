@@ -1,14 +1,8 @@
-"""
-Open-Domain Question Answering 을 수행하는 inference 코드 입니다.
-
-대부분의 로직은 train.py 와 비슷하나 retrieval, predict
-"""
+#python inference2.py --output_dir ./outputs/test_dataset/ --dataset_name ./data/test_dataset/ --model_name_or_path ./models/train_dataset/ --do_predict --overwrite_output_dir
 #python inference.py --output_dir ./outputs/test_dataset/ --dataset_name ./data/test_dataset/ --model_name_or_path ./models/train_dataset/ --do_predict --overwrite_output_dir
-
-import logging
 import os
 import sys
-import re
+import collections
 from datasets import load_metric, load_from_disk, Sequence, Value, Features, Dataset, DatasetDict
 
 from transformers import AutoConfig, AutoModelForQuestionAnswering, AutoTokenizer
@@ -23,20 +17,16 @@ from transformers import (
 
 from utils_qa import postprocess_qa_predictions, check_no_error, tokenize
 from trainer_qa import QuestionAnsweringTrainer
-from retrieval import SparseRetrieval, DenseRetrieval, BM25Arti
+from retrieval import SparseRetrieval, BM25Arti
 
 from arguments import (
     ModelArguments,
     DataTrainingArguments,
 )
-
-logger = logging.getLogger(__name__)
+import pandas as pd
 
 
 def main():
-    # 가능한 arguments 들은 ./arguments.py 나 transformer package 안의 src/transformers/training_args.py 에서 확인 가능합니다.
-    # --help flag 를 실행시켜서 확인할 수 도 있습니다.
-
     parser = HfArgumentParser(
         (ModelArguments, DataTrainingArguments, TrainingArguments)
     )
@@ -44,24 +34,10 @@ def main():
 
     training_args.do_train = True
 
-    print(f"model is from {model_args.model_name_or_path}")
-    print(f"data is from {data_args.dataset_name}")
-
-    # Setup logging
-    logging.basicConfig(
-        format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
-        datefmt="%m/%d/%Y %H:%M:%S",
-        handlers=[logging.StreamHandler(sys.stdout)],
-    )
-
-    # Set the verbosity to info of the Transformers logger (on main process only):
-    logger.info("Training/evaluation parameters %s", training_args)
-
     # Set seed before initializing model.
     set_seed(training_args.seed)
 
     datasets = load_from_disk(data_args.dataset_name)
-    print(datasets)
 
     # Load pretrained model and tokenizer
     config = AutoConfig.from_pretrained(
@@ -81,54 +57,72 @@ def main():
         config=config,
     )
 
-    # run passage retrieval if true
-    if data_args.eval_retrieval:
-        datasets = run_sparse_retrieval(datasets, training_args)
-    print("Half Done")
-    # eval or predict mrc model
-    if training_args.do_eval or training_args.do_predict:
-        run_mrc(data_args, training_args, model_args, datasets, tokenizer, model)
-
-
-def run_sparse_retrieval(datasets, training_args):
-    #### retreival process ####
-
-    retriever = BM25Arti(tokenize_fn=tokenize,
+    s_retriever = BM25Arti(tokenize_fn=tokenize,
                                 data_path="./data",
                                 context_path="wikipedia_documents.json")
-    df = retriever.retrieve(datasets['validation'])
-
-
-    if training_args.do_predict: # test data 에 대해선 정답이 없으므로 id question context 로만 데이터셋이 구성됩니다.
-        f = Features({'context': Value(dtype='string', id=None),
-                      'id': Value(dtype='string', id=None),
-                      'question': Value(dtype='string', id=None)})
-
-    datasets = DatasetDict({'validation': Dataset.from_pandas(df, features=f)})
-    return datasets
-
-def run_dense_retrieval(datasets, training_args):
-    #### retreival process ####
-
-    retriever = DenseRetrieval(tokenize_fn=tokenize,
+    d_retriever = BM25Arti(tokenize_fn=tokenize,
                                 data_path="./data",
                                 context_path="wikipedia_documents.json")
-    df = retriever.retrieve(datasets['validation'])
+    #retriever.get_sparse_embedding()
+    
+    cmd=0
+    while cmd==0:
+        query=input("Input query ")
+        topk=int(input("Top K "))
+        scores, indices = s_retriever.retrieve(query,topk)
+        print("Sparse")
+        for idx,index in enumerate(indices):
+            print("#"+str(idx),"----------")
+            print("document #",index)
+            print(s_retriever.contexts[index][:50])
+        total=[]
+        tmp=None
+        for ide,idx in enumerate(indices):
+            tmp = {
+                "question": query,
+                "id": str(ide),
+                "context": s_retriever.contexts[idx]
+            }
+            total.append(tmp)
+        df=pd.DataFrame(total)
 
+        f = Features({'context': Value(dtype='string', id=None),'id': Value(dtype='string', id=None),'question': Value(dtype='string', id=None)})
 
-    if training_args.do_predict: # test data 에 대해선 정답이 없으므로 id question context 로만 데이터셋이 구성됩니다.
-        f = Features({'context': Value(dtype='string', id=None),
-                      'id': Value(dtype='string', id=None),
-                      'question': Value(dtype='string', id=None)})
+        datasets = DatasetDict({'validation': Dataset.from_pandas(df, features=f)})    
+        ret_pred=run_mrc(data_args, training_args, model_args, datasets, tokenizer, model)
+        for idx,score in enumerate(scores):
+            print(ret_pred[idx],score)
+        
+        
+        scores, indices = d_retriever.retrieve(query,topk)
+        print("Dense")
+        for idx,index in enumerate(indices):
+            print("#"+str(idx),"----------")
+            print("document #",index)
+            print(d_retriever.contexts[index][:50])
+        total=[]
+        tmp=None
+        for ide,idx in enumerate(indices):
+            tmp = {
+                "question": query,
+                "id": str(ide),
+                "context": d_retriever.contexts[idx]
+            }
+            total.append(tmp)
+        df=pd.DataFrame(total)
 
-    datasets = DatasetDict({'validation': Dataset.from_pandas(df, features=f)})
-    return datasets
+        f = Features({'context': Value(dtype='string', id=None),'id': Value(dtype='string', id=None),'question': Value(dtype='string', id=None)})
+
+        datasets = DatasetDict({'validation': Dataset.from_pandas(df, features=f)})    
+        ret_pred=run_mrc(data_args, training_args, model_args, datasets, tokenizer, model)
+        for idx,score in enumerate(scores):
+            print(ret_pred[idx],score)
+        cmd=int(input("continue press 0"))
 
 
 def run_mrc(data_args, training_args, model_args, datasets, tokenizer, model):
     # only for eval or predict
     column_names = datasets["validation"].column_names
-
     question_column_name = "question" if "question" in column_names else column_names[0]
     context_column_name = "context" if "context" in column_names else column_names[1]
     answer_column_name = "answers" if "answers" in column_names else column_names[2]
@@ -181,7 +175,6 @@ def run_mrc(data_args, training_args, model_args, datasets, tokenizer, model):
         return tokenized_examples
 
     eval_dataset = datasets["validation"]
-
     # Validation Feature Creation
     eval_dataset = eval_dataset.map(
         prepare_validation_features,
@@ -190,7 +183,6 @@ def run_mrc(data_args, training_args, model_args, datasets, tokenizer, model):
         remove_columns=column_names,
         load_from_cache_file=not data_args.overwrite_cache,
     )
-
     # Data collator
     # We have already padded to max length if the corresponding flag is True, otherwise we need to pad in the data collator.
     data_collator = (
@@ -209,6 +201,10 @@ def run_mrc(data_args, training_args, model_args, datasets, tokenizer, model):
             max_answer_length=data_args.max_answer_length,
             output_dir=training_args.output_dir,
         )
+        super_counter=collections.defaultdict(int)
+        for k, v in predictions.items():
+            print(k,"Answer: ",v)
+            
         # Format the result to the format the metric expects.
         formatted_predictions = [
             {"id": k, "prediction_text": v} for k, v in predictions.items()
@@ -242,22 +238,11 @@ def run_mrc(data_args, training_args, model_args, datasets, tokenizer, model):
         compute_metrics=compute_metrics,
     )
 
-    logger.info("*** Evaluate ***")
-
     #### eval dataset & eval example - will create predictions.json
     if training_args.do_predict:
-        predictions = trainer.predict(test_dataset=eval_dataset,
-                                        test_examples=datasets['validation'])
-
-        # predictions.json is already saved when we call postprocess_qa_predictions(). so there is no need to further use predictions.
-        print("No metric can be presented because there is no correct answer given. Job done!")
-
-    if training_args.do_eval:
-        metrics = trainer.evaluate()
-        metrics["eval_samples"] = len(eval_dataset)
-
-        trainer.log_metrics("test", metrics)
-        trainer.save_metrics("test", metrics)
+        predictions = trainer.predict(test_dataset=eval_dataset,test_examples=datasets['validation'])
+        print("predictions",predictions)
+    return predictions
 
 if __name__ == "__main__":
     main()

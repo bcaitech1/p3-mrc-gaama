@@ -15,7 +15,7 @@ from transformers import (
 
 from utils_qa import postprocess_qa_predictions, check_no_error, tokenize
 from trainer_qa import QuestionAnsweringTrainer
-from retrieval import SparseRetrieval
+from retrieval import SparseRetrieval, DenseRetrieval, BM25Arti
 
 from arguments import (
     ModelArguments,
@@ -69,10 +69,15 @@ def main():
         from_tf=bool(".ckpt" in model_args.model_name_or_path),
         config=config,
     )
-
+    training_args.save_steps=3000
+    training_args.logging_steps=3000
+    training_args.num_train_epochs=1
+    training_args.learning_rate=1e-4
     # train & save sparse embedding retriever if true
+    a=0
     if data_args.train_retrieval:
-        run_sparse_embedding()
+        #run_sparse_embedding()
+        a=a+1
 
     # train or eval mrc model
     if training_args.do_train or training_args.do_eval:
@@ -80,10 +85,10 @@ def main():
 
 
 def run_sparse_embedding():
-    retriever = SparseRetrieval(tokenize_fn=tokenize,
+    retriever = BM25Arti(tokenize_fn=tokenize,
                                 data_path="./data",
                                 context_path="wikipedia_documents.json")
-    retriever.get_sparse_embedding()
+    #retriever.get_sparse_embedding()
 
 
 def run_mrc(data_args, training_args, model_args, datasets, tokenizer, model):
