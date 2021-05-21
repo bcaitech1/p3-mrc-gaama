@@ -1,10 +1,7 @@
 import logging
 import os
 import sys
-from datasets import load_metric, load_from_disk, Sequence, Value, Features, Dataset, DatasetDict, load_dataset
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from datasets import load_metric, load_from_disk, Sequence, Value, Features, Dataset, DatasetDict
 
 from transformers import AutoConfig, AutoModelForQuestionAnswering, AutoTokenizer
 from tokenization_kobert import KoBertTokenizer
@@ -17,11 +14,10 @@ from transformers import (
     AutoModel,
     BertConfig
 )
-from tqdm import tqdm
+
 from utils_qa import postprocess_qa_predictions, check_no_error, tokenize
 from trainer_qa import QuestionAnsweringTrainer
 from retrieval import SparseRetrieval
-import pandas as pd
 
 from arguments import (
     ModelArguments,
@@ -58,49 +54,6 @@ def main():
     datasets = load_from_disk(data_args.dataset_name)
     print(datasets)
 
-    if data_args.include_korquad:
-        print("========== include korquad ==========")
-        korquad_dataset = load_dataset("squad_kor_v1")
-
-        total = []
-        for idx, example in enumerate(tqdm(datasets['train'], desc="Concatenate klue: ")):
-            tmp = {
-                "question": example["question"],
-                "id": example['id'],
-                "context": example['context'],
-                "answers": example['answers'],          # original answer
-                "title": example['title'],           # original answer
-            }
-            total.append(tmp)
-        
-        for idx, example in enumerate(tqdm(korquad_dataset['train'], desc="Concatenate korquad: ")):
-            if len(example['context']) >= 500:
-                tmp = {
-                    "question": example["question"],
-                    "id": example['id'],
-                    "context": example['context'],
-                    "answers": example['answers'],          # original answer
-                    "title": example['title'],           # original answer
-                }
-                total.append(tmp)
-
-        datasets['train'] = Dataset.from_pandas(pd.DataFrame(total))
-
-        total = []
-        for idx, example in enumerate(tqdm(datasets['validation'], desc="Concatenate klue validation: ")):
-            tmp = {
-                "question": example["question"],
-                "id": example['id'],
-                "context": example['context'],
-                "answers": example['answers'],          # original answer
-                "title": example['title'],           # original answer
-            }
-            total.append(tmp)
-        
-        datasets['validation'] = Dataset.from_pandas(pd.DataFrame(total))
-        print(datasets)
-        # exit()
-
     # Load pretrained model and tokenizer
     config = AutoConfig.from_pretrained(
         model_args.config_name
@@ -121,8 +74,6 @@ def main():
         config=config,
     )
 
-    # print(model)
-    # exit()
     if model_args.tokenizer_name == 'monologg/kobert':
         config = BertConfig
         tokenizer = KoBertTokenizer.from_pretrained('monologg/kobert', use_fast=True)
@@ -134,70 +85,11 @@ def main():
         model_module = getattr(import_module("transformers"), "XLMRobertaForQuestionAnswering")
         model = model_module.from_pretrained('xlm-roberta-large', config=config)
 
-    # train & save sparse embedding retriever if true
-    if data_args.train_retrieval:
-        datasets['train'] = run_sparse_embedding_train(datasets['train'], training_args, data_args)
-        print("============check==============")
-        # exit()
-
-    
-    if data_args.eval_retrieval:
-        datasets['validation'] = run_sparse_embedding_val(datasets['validation'], training_args, data_args)
-        print("============check==============")
-        # exit()
-
     # train or eval mrc model
     if training_args.do_train or training_args.do_eval:
         run_mrc(data_args, training_args, model_args, datasets, tokenizer, model)
 
 
-def run_sparse_embedding_train(datasets, training_args, data_args):
-    retriever = SparseRetrieval(tokenize_fn=tokenize,
-                                data_path="/opt/ml/input/data",
-                                context_path="wikipedia_documents.json",
-                                args = data_args)
-
-    if data_args.embedding_mode != 'bm25_new':
-        retriever.get_sparse_embedding()
-
-    # if training_args.do_train: # test data 에 대해선 정답이 없으므로 id question context 로만 데이터셋이 구성됩니다.
-    df = retriever.retrieve(datasets, topk=data_args.topk, what = "train_train")
-    f = Features({'answers': Sequence(feature={'text': Value(dtype='string', id=None),
-                                                'answer_start': Value(dtype='int32', id=None)},
-                                        length=-1, id=None),
-                    'context': Value(dtype='string', id=None),
-                    'id': Value(dtype='string', id=None),
-                    'question': Value(dtype='string', id=None)})
-
-    # datasets = DatasetDict({'train': Dataset.from_pandas(df, features=f)})
-    datasets = Dataset.from_pandas(df, features=f)
-
-    print(datasets)
-    return datasets
-
-
-def run_sparse_embedding_val(datasets, training_args, data_args):
-    retriever = SparseRetrieval(tokenize_fn=tokenize,
-                                data_path="/opt/ml/input/data",
-                                context_path="wikipedia_documents.json",
-                                args = data_args)
-
-    if data_args.embedding_mode != 'bm25_new':
-        retriever.get_sparse_embedding()
-
-    df = retriever.retrieve(datasets, topk=data_args.topk, what = "train_val")
-    f = Features({'answers': Sequence(feature={'text': Value(dtype='string', id=None),
-                                                'answer_start': Value(dtype='int32', id=None)},
-                                        length=-1, id=None),
-                    'context': Value(dtype='string', id=None),
-                    'id': Value(dtype='string', id=None),
-                    'question': Value(dtype='string', id=None)})
-                    
-    # datasets = DatasetDict({'validation': Dataset.from_pandas(df, features=f)})
-    datasets = Dataset.from_pandas(df, features=f)
-
-    print(datasets)
-    return datasets
 
 def run_mrc(data_args, training_args, model_args, datasets, tokenizer, model):
     # Preprocessing the datasets.
@@ -207,10 +99,12 @@ def run_mrc(data_args, training_args, model_args, datasets, tokenizer, model):
     else:
         column_names = datasets["validation"].column_names
 
+    # print(datasets["validation"].column_names)
+    # exit()
     question_column_name = "question" if "question" in column_names else column_names[0]
     context_column_name = "context" if "context" in column_names else column_names[1]
     answer_column_name = "answers" if "answers" in column_names else column_names[2]
-    title_column_name = "title" if "title" in column_names else column_names[3]
+    # title_column_name = "title" if "title" in column_names else column_names[3]
 
     # Padding side determines if we do (question|context) or (context|question).
     pad_on_right = tokenizer.padding_side == "right"
@@ -223,9 +117,17 @@ def run_mrc(data_args, training_args, model_args, datasets, tokenizer, model):
         # Tokenize our examples with truncation and maybe padding, but keep the overflows using a stride. This results
         # in one example possible giving several features when a context is long, each of those features having a
         # context that overlaps a bit the context of the previous feature.
+               
+        # print(examples[title_column_name][0], examples[context_column_name if pad_on_right else question_column_name][0])
+        # print(list(map(' '.join, zip(examples[title_column_name], examples[context_column_name if pad_on_right else question_column_name])))[0])
+        # exit()
+        example['context'] = example['title'] + " " + example['context']
+        example['answers']['answer_start'] += (len(example['title'] + 1))
         
         tokenized_examples = tokenizer(
             examples[question_column_name if pad_on_right else context_column_name],
+            # list(map(' '.join, zip(examples[context_column_name if pad_on_right else question_column_name], examples[title_column_name]))),       
+            # examples[title_column_name],
             examples[context_column_name if pad_on_right else question_column_name],
             truncation="only_second" if pad_on_right else "only_first",
             max_length=max_seq_length,
@@ -319,8 +221,18 @@ def run_mrc(data_args, training_args, model_args, datasets, tokenizer, model):
         # in one example possible giving several features when a context is long, each of those features having a
         # context that overlaps a bit the context of the previous feature.
         
+        # print(examples[title_column_name][0], examples[context_column_name if pad_on_right else question_column_name][0])
+        # print(list(map(' '.join, zip(examples[title_column_name], examples[context_column_name if pad_on_right else question_column_name])))[0])
+        # exit()
+
+        example['context'] = example['title'] + " " + example['context']
+        example['answers']['answer_start'] += (len(example['title'] + 1))
+        
         tokenized_examples = tokenizer(
             examples[question_column_name if pad_on_right else context_column_name],
+            # list(map(' '.join, zip(examples[context_column_name if pad_on_right else question_column_name], examples[title_column_name]))),
+            # list(map(' '.join, zip(examples[title_column_name], examples[context_column_name if pad_on_right else question_column_name]))),       
+            # examples[title_column_name],
             examples[context_column_name if pad_on_right else question_column_name],
             truncation="only_second" if pad_on_right else "only_first",
             max_length=max_seq_length,

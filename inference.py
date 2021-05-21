@@ -4,13 +4,19 @@ Open-Domain Question Answering 을 수행하는 inference 코드 입니다.
 대부분의 로직은 train.py 와 비슷하나 retrieval, predict
 """
 
-
+import argparse
 import logging
 import os
 import sys
 from datasets import load_metric, load_from_disk, Sequence, Value, Features, Dataset, DatasetDict
+from subprocess import Popen, PIPE, STDOUT
+from elasticsearch import Elasticsearch
+from transformers import AutoConfig, AutoModelForQuestionAnswering, AutoTokenizer, AutoModel, PreTrainedModel, ElectraForQuestionAnswering
+import time
 
-from transformers import AutoConfig, AutoModelForQuestionAnswering, AutoTokenizer
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 from transformers import (
     DataCollatorWithPadding,
@@ -35,7 +41,6 @@ logger = logging.getLogger(__name__)
 def main():
     # 가능한 arguments 들은 ./arguments.py 나 transformer package 안의 src/transformers/training_args.py 에서 확인 가능합니다.
     # --help flag 를 실행시켜서 확인할 수 도 있습니다.
-
     parser = HfArgumentParser(
         (ModelArguments, DataTrainingArguments, TrainingArguments)
     )
@@ -74,30 +79,50 @@ def main():
         else model_args.model_name_or_path,
         use_fast=True,
     )
+
+    # model = ElectraForQuestionAnswering(
+    #     config=config
+    # )
+    
+    # model.qa_outputs = nn.Sequential(
+    #     nn.Linear(768, 384),
+    #     nn.Dropout(0.7),
+    #     nn.Linear(384, 2)
+    # )
+
+    # model.load_state_dict(torch.load(".ckpt" in model_args.model_name_or_path), strict=False)
     model = AutoModelForQuestionAnswering.from_pretrained(
         model_args.model_name_or_path,
         from_tf=bool(".ckpt" in model_args.model_name_or_path),
         config=config,
     )
-
-    # run passage retrieval if true
+    # print(model)
     if data_args.eval_retrieval:
-        datasets = run_sparse_retrieval(datasets, training_args)
+        datasets = run_sparse_retrieval(datasets, training_args, data_args)
+        print("============check==============")
 
     # eval or predict mrc model
     if training_args.do_eval or training_args.do_predict:
         run_mrc(data_args, training_args, model_args, datasets, tokenizer, model)
 
 
-def run_sparse_retrieval(datasets, training_args):
+def run_sparse_retrieval(datasets, training_args, data_args):
     #### retreival process ####
-
     retriever = SparseRetrieval(tokenize_fn=tokenize,
-                                data_path="./data",
-                                context_path="wikipedia_documents.json")
-    retriever.get_sparse_embedding()
-    df = retriever.retrieve(datasets['validation'])
+                                data_path="/opt/ml/input/data",
+                                context_path="wikipedia_documents.json",
+                                args = data_args
+                                )
 
+    if data_args.embedding_mode != 'bm25_new' and data_args.embedding_mode != 'elastic':
+        retriever.get_sparse_embedding()
+
+    if data_args.embedding_mode == 'elastic':
+        es = setting_elastic()
+        df = retriever.retrieve_elastic(datasets['validation'], topk=data_args.topk, what='val', es = es)
+    else:
+        df = retriever.retrieve(datasets['validation'], topk=data_args.topk, what='val')
+    
     # faiss retrieval
     # df = retriever.retrieve_faiss(dataset['validation'])
 
@@ -115,23 +140,26 @@ def run_sparse_retrieval(datasets, training_args):
                       'question': Value(dtype='string', id=None)})
 
     datasets = DatasetDict({'validation': Dataset.from_pandas(df, features=f)})
+    print(datasets)
     return datasets
 
 
 def run_mrc(data_args, training_args, model_args, datasets, tokenizer, model):
     # only for eval or predict
     column_names = datasets["validation"].column_names
-
+    # print(column_names)
     question_column_name = "question" if "question" in column_names else column_names[0]
     context_column_name = "context" if "context" in column_names else column_names[1]
+    # context_column_name = "contexts" if "contexts" in column_names else column_names[1]
     answer_column_name = "answers" if "answers" in column_names else column_names[2]
-
+    
     # Padding side determines if we do (question|context) or (context|question).
     pad_on_right = tokenizer.padding_side == "right"
 
     # check if there is an error
     last_checkpoint, max_seq_length = check_no_error(training_args, data_args, tokenizer, datasets)
-
+    print(max_seq_length)
+    # exit()
     # Validation preprocessing
     def prepare_validation_features(examples):
         # Tokenize our examples with truncation and maybe padding, but keep the overflows using a stride. This results
@@ -174,7 +202,7 @@ def run_mrc(data_args, training_args, model_args, datasets, tokenizer, model):
         return tokenized_examples
 
     eval_dataset = datasets["validation"]
-
+    print(eval_dataset[0])
     # Validation Feature Creation
     eval_dataset = eval_dataset.map(
         prepare_validation_features,
@@ -251,6 +279,68 @@ def run_mrc(data_args, training_args, model_args, datasets, tokenizer, model):
 
         trainer.log_metrics("test", metrics)
         trainer.save_metrics("test", metrics)
+
+def setting_elastic():
+    es_server = Popen(['/opt/ml/elasticsearch-7.9.2/bin/elasticsearch'],
+                    stdout=PIPE, stderr=STDOUT,
+                    preexec_fn=lambda: os.setuid(1)
+                    )
+    time.sleep(30) 
+
+    es = Elasticsearch('localhost:9200')
+
+    # es.indices.create(index = 'document',
+    #             body = {
+    #                 'settings':{
+    #                     'analysis':{
+    #                         'analyzer':{
+    #                             'my_analyzer':{
+    #                                 "type": "custom",
+    #                                 'tokenizer':'nori_tokenizer',
+    #                                 'decompound_mode':'mixed',
+    #                                 'stopwords':'_korean_',
+    #                                 "filter": ["lowercase",
+    #                                             "my_shingle_f",
+    #                                             "nori_readingform",
+    #                                             "nori_number"]
+    #                             }
+    #                         },
+    #                         'filter':{
+    #                             'my_shingle_f':{
+    #                                 "type": "shingle"
+    #                             }
+    #                         }
+    #                     },
+    #                     'similarity':{
+    #                         'my_similarity':{
+    #                             'type':'BM25',
+    #                         }
+    #                     }
+    #                 },
+    #                 'mappings':{
+    #                     'properties':{
+    #                         'title':{
+    #                             'type':'text',
+    #                             'analyzer':'my_analyzer',
+    #                             'similarity':'my_similarity'
+    #                         },
+    #                         'text':{
+    #                             'type':'text',
+    #                             'analyzer':'my_analyzer',
+    #                             'similarity':'my_similarity'
+    #                         }
+    #                     }
+    #                 }
+    #             }
+    #             )
+
+    # with open('input/data/wikipedia_documents.json', 'r') as f:
+    #     wiki_data = pd.DataFrame(json.load(f)).transpose()
+
+    # for num in tqdm(range(len(wiki_data)), desc="Elastic search: "):
+    #     es.index(index='document', body = {"title" : wiki_data['title'][num], "text" : wiki_data['text'][num]})
+
+    return es
 
 if __name__ == "__main__":
     main()

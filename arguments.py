@@ -23,7 +23,7 @@ class DataTrainingArguments:
     Arguments pertaining to what data we are going to input our model for training and eval.
     """
     dataset_name: Optional[str] = field(
-        default="./data/train_dataset", metadata={"help": "The name of the dataset to use."}
+        default="/opt/ml/input/data/train_dataset", metadata={"help": "The name of the dataset to use."}
     )
     overwrite_cache: bool = field(
         default=False, metadata={"help": "Overwrite the cached training and evaluation sets"}
@@ -33,7 +33,8 @@ class DataTrainingArguments:
         metadata={"help": "The number of processes to use for the preprocessing."},
     )
     max_seq_length: int = field(
-        default=384,
+        default=512,
+        # default=384,
         metadata={
             "help": "The maximum total input sequence length after tokenization. Sequences longer "
                     "than this will be truncated, sequences shorter will be padded."
@@ -59,14 +60,19 @@ class DataTrainingArguments:
         },
     )
     train_retrieval: bool = field(
-        default=True,
+        default=False,
         metadata={"help": "Whether to train sparse/dense embedding (prepare for retrieval)."},
     )
     eval_retrieval: bool = field(
-        default=True,
+        default=False,
         metadata={"help":"Whether to run passage retrieval using sparse/dense embedding )."},
     )
-
-
-
-
+    embedding_mode: str = field(
+        default='bm25_new',
+    )
+    topk: int = field(
+        default=1,
+    )
+    include_korquad: bool = field(
+        default=False,
+    )
